@@ -3,13 +3,14 @@ local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- 1. JOUW EIGEN LIJST MET KEYS IS HIER ALVAST INGEVULD!
 local KeyDatabaseURL = "https://githubusercontent.com"
 local SaveFileName = "ApexSniper_Key.txt" 
 local MyDiscordLink = "https://discord.gg"
+local AdminMasterKey = "APEX-ADMIN-OVERRIDE" -- Jouw Admin Code
 
 -- Functie om de online keys te controleren
 local function checkKeyOnline(userKey)
+    if userKey == AdminMasterKey then return true end
     local success, response = pcall(function()
         return game:HttpGet(KeyDatabaseURL)
     end)
@@ -315,7 +316,7 @@ DiscordLinkText.TextSize = 14
 
 NextBtn.MouseButton1Click:Connect(function()
     local enteredKey = KeyInput.Text
-    if checkKeyOnline(enteredKey) then
+    if enteredKey == AdminMasterKey or checkKeyOnline(enteredKey) then
         writefile(SaveFileName, enteredKey)
         KeyGui:Destroy()
         loadMainScript()
