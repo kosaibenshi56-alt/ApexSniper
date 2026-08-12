@@ -1,14 +1,13 @@
--- [[ Apex - Code Sniper: Official Save-Key & Cloud System ]] --
+-- [[ Apex - Code Sniper: Official Safe Cloud Protection System ]] --
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local KeyDatabaseURL = "https://githubusercontent.com"
-local SaveFileName = "ApexSniper_Key.txt" 
 local MyDiscordLink = "https://discord.gg"
 local AdminMasterKey = "APEX-ADMIN-OVERRIDE" -- Jouw Admin Code
 
--- Functie om de online keys te controleren
+-- Functie om de online keys veilig te controleren in het geheugen
 local function checkKeyOnline(userKey)
     if userKey == AdminMasterKey then return true end
     local success, response = pcall(function()
@@ -29,7 +28,7 @@ end
 -- HET HOOFDMENU (APEX - CODE SNIPER)
 -- =========================================================================
 local function loadMainScript()
-    print("[Apex] Welkom terug! Licentie actief.")
+    print("[Apex] Licentie actief. Script succesvol geladen.")
     
     local CodeRemote = ReplicatedStorage:WaitForChild("RedeemCodeEvent") 
     local isCollecting = false
@@ -218,16 +217,9 @@ local function loadMainScript()
     end)
 end
 
-if isfile(SaveFileName) then
-    local savedKey = readfile(SaveFileName)
-    if checkKeyOnline(savedKey) then
-        loadMainScript()
-        return
-    else
-        delfile(SaveFileName)
-    end
-end
-
+-- =========================================================================
+-- HET INLOGSCHERM (Start nu ALTIJD direct op zonder bestanden te lezen)
+-- =========================================================================
 local KeyGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
 local KeyFrame = Instance.new("Frame", KeyGui)
 KeyFrame.Size = UDim2.new(0, 320, 0, 240)
@@ -316,10 +308,9 @@ DiscordLinkText.TextSize = 14
 
 NextBtn.MouseButton1Click:Connect(function()
     local enteredKey = KeyInput.Text
-    if enteredKey == AdminMasterKey or checkKeyOnline(enteredKey) then
-        writefile(SaveFileName, enteredKey)
+    if checkKeyOnline(enteredKey) then
         KeyGui:Destroy()
-        loadMainScript()
+        loadMainScript() -- Start direct in het geheugen!
     else
         KeyInput.Text = ""
         KeyInput.PlaceholderText = "INVALID OR BLACKLISTED KEY!"
