@@ -44,6 +44,7 @@ local CONFIG = {
     WatchedNames  = { "sammy" },
     -- if true, codes from ANY player are grabbed. if false, only WatchedNames
     TrackEveryone = false,
+    TrackSelf     = false,  -- also react to your own chat messages (for testing)
     SubmitDelay   = 0,      -- seconds to wait before auto submit (0 = instant)
     AutoSubmit    = true,
     AutoPaste     = true,   -- watch clipboard and auto paste + submit new codes
@@ -246,8 +247,8 @@ end
 -- Main window
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 420, 0, 562)
-Main.Position = UDim2.new(0.5, -210, 0.5, -281)
+Main.Size = UDim2.new(0, 420, 0, 616)
+Main.Position = UDim2.new(0.5, -210, 0.5, -308)
 Main.BackgroundColor3 = THEME.Background
 Main.BorderSizePixel = 0
 Main.Active = true
@@ -404,6 +405,13 @@ local HistoryToggle = makeToggle(p6, "History", false, function(v)
     end
 end)
 
+-- Row 4: Track everyone | Snipe my msgs
+local p7 = makePanel(20, 314, 185, 46)
+makeToggle(p7, "Track everyone", CONFIG.TrackEveryone, function(v) CONFIG.TrackEveryone = v end)
+
+local p8 = makePanel(215, 314, 185, 46)
+makeToggle(p8, "Snipe my msgs", CONFIG.TrackSelf, function(v) CONFIG.TrackSelf = v end)
+
 local p4 = makePanel(215, 206, 185, 46)
 do
     local label = Instance.new("TextLabel")
@@ -464,7 +472,7 @@ end
 -------------------------------------------------
 local CodeBox = Instance.new("TextBox")
 CodeBox.Size = UDim2.new(1, -40, 0, 38)
-CodeBox.Position = UDim2.new(0, 20, 0, 316)
+CodeBox.Position = UDim2.new(0, 20, 0, 370)
 CodeBox.BackgroundColor3 = THEME.PanelDark
 CodeBox.Font = Enum.Font.Code
 CodeBox.TextSize = 16
@@ -482,7 +490,7 @@ stroke(CodeBox, THEME.Neon, 1.5, 0.3)
 -------------------------------------------------
 local Console = Instance.new("ScrollingFrame")
 Console.Size = UDim2.new(1, -40, 0, 180)
-Console.Position = UDim2.new(0, 20, 0, 362)
+Console.Position = UDim2.new(0, 20, 0, 416)
 Console.BackgroundColor3 = THEME.PanelDark
 Console.BorderSizePixel = 0
 Console.ScrollBarThickness = 5
@@ -811,8 +819,13 @@ local function solveRiddle(msg)
     return nil
 end
 
+local chatHookConfirmed = false
 local function onChat(speakerName, message)
-    if speakerName == LocalPlayer.Name then return end
+    if not chatHookConfirmed then
+        chatHookConfirmed = true
+        log("chat hook active (heard " .. speakerName .. ")", THEME.NeonSoft)
+    end
+    if speakerName == LocalPlayer.Name and not CONFIG.TrackSelf then return end
 
     -- riddle solver: check every message for a known riddle
     if CONFIG.RiddleSolver then
@@ -830,15 +843,19 @@ local function onChat(speakerName, message)
     end
 
     -- code sniping from watched admins
-    if isWatched(speakerName) then
-        local code = extractCode(message)
-        if code and code ~= State.LastCode then
-            log("code from " .. speakerName .. ": " .. code, THEME.Success)
-            setclip(code)
-            CodeBox.Text = code
-            if CONFIG.AutoSubmit then
-                submitCode(code, speakerName)
+    local code = extractCode(message)
+    if code then
+        if isWatched(speakerName) or (speakerName == LocalPlayer.Name and CONFIG.TrackSelf) then
+            if code ~= State.LastCode then
+                log("code from " .. speakerName .. ": " .. code, THEME.Success)
+                setclip(code)
+                CodeBox.Text = code
+                if CONFIG.AutoSubmit then
+                    submitCode(code, speakerName)
+                end
             end
+        else
+            log("ignored code from " .. speakerName .. " (not watched - turn on Track everyone)", THEME.TextDim)
         end
     end
 end
