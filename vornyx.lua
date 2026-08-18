@@ -156,16 +156,43 @@ end
 -- Scans PlayerGui for a TextBox that looks like a code input
 -- and a submit button near it.
 -------------------------------------------------
+local function isOurGui(obj)
+    local p = obj
+    while p do
+        if p.Name == "VornyxCodeSniper" then return true end
+        p = p.Parent
+    end
+    return false
+end
+
 local function findCodeBox()
+    local best, bestScore = nil, 0
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
-        if obj:IsA("TextBox") then
+        if obj:IsA("TextBox") and not isOurGui(obj) then
             local hint = (obj.PlaceholderText or ""):lower() .. " " .. obj.Name:lower()
-            if hint:find("code") or hint:find("enter") then
-                return obj
+            local p = obj.Parent
+            for _ = 1, 4 do
+                if p and p ~= PlayerGui then
+                    hint = hint .. " " .. p.Name:lower()
+                    p = p.Parent
+                end
+            end
+            local score = 0
+            if hint:find("code") then score = score + 4 end
+            if hint:find("redeem") then score = score + 3 end
+            if hint:find("twitter") then score = score + 2 end
+            if hint:find("enter") then score = score + 1 end
+            if hint:find("type") then score = score + 1 end
+            if hint:find("here") then score = score + 1 end
+            if score > 0 then
+                if obj.Visible then score = score + 2 end
+                if score > bestScore then
+                    best, bestScore = obj, score
+                end
             end
         end
     end
-    return nil
+    return best
 end
 
 local function findSubmitButton(codeBox)
@@ -682,6 +709,7 @@ local function submitCode(code, source)
         local submitted = false
 
         if gameBox then
+            log("game code box: " .. gameBox:GetFullName(), THEME.TextDim)
             -- extra fast: set text directly then fire the submit button
             pcall(function()
                 gameBox.Text = code
@@ -700,7 +728,7 @@ local function submitCode(code, source)
                 log("submitted '" .. code .. "' via enter key", THEME.Success)
             end
         else
-            log("code UI not found - copied '" .. code .. "' to clipboard", THEME.Fail)
+            log("game code box not found - open the game's Codes menu, code '" .. code .. "' is on your clipboard", THEME.Fail)
             setclip(code)
         end
 
