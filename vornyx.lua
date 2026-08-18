@@ -1015,6 +1015,56 @@ pcall(function()
 end)
 
 -------------------------------------------------
+-- Custom / global chat GUI watcher
+-- Some games render their own "live chat" in the
+-- GUI instead of using Roblox chat. This reads any
+-- new "name: message" label that appears on screen.
+-------------------------------------------------
+pcall(function()
+    local function stripRichText(text)
+        return (text:gsub("<[^>]->", ""))
+    end
+
+    local seenGuiMsgs = {}
+    local function parseChatLabel(text)
+        text = stripRichText(text)
+        -- match "name: message" (also "[name]: message" / "name] message")
+        local name, msg = text:match("^%s*%[?([%w_]+)%]?%s*[:%]]%s*(.+)$")
+        if name and msg and #msg > 0 then
+            return name, msg
+        end
+        return nil
+    end
+
+    local function handleLabel(obj)
+        if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
+        if isOurGui(obj) then return end
+        local function process()
+            local text = obj.Text
+            if not text or text == "" then return end
+            local name, msg = parseChatLabel(text)
+            if not name then return end
+            local key = name .. "\0" .. msg
+            if seenGuiMsgs[key] then return end
+            seenGuiMsgs[key] = true
+            task.delay(5, function() seenGuiMsgs[key] = nil end)
+            onChat(name, msg)
+        end
+        process()
+        obj:GetPropertyChangedSignal("Text"):Connect(process)
+    end
+
+    PlayerGui.DescendantAdded:Connect(function(obj)
+        task.wait(0.04)
+        pcall(handleLabel, obj)
+    end)
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        pcall(handleLabel, obj)
+    end
+    log("GUI chat watcher active", THEME.TextDim)
+end)
+
+-------------------------------------------------
 -- Announcement sniping (Steal a Brainrot style)
 -- Admin codes come through the game's notification
 -- remote, not the chat - this listens to it directly.
