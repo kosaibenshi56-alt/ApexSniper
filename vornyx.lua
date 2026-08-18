@@ -42,9 +42,8 @@ local CONFIG = {
     KeyFile       = "VornyxKey.txt",
     -- names to watch in chat (lowercase). add more admin names here
     WatchedNames  = { "sammy" },
-    -- if true, codes from ANY player are grabbed. if false, only WatchedNames
-    TrackEveryone = false,
-    TrackSelf     = false,  -- also react to your own chat messages (for testing)
+    TrackEveryone = true,   -- grab codes from any player, not just WatchedNames
+    TrackSelf     = true,   -- also react to your own chat messages (for testing)
     SubmitDelay   = 0,      -- seconds to wait before auto submit (0 = instant)
     SubmitAfter   = 1,      -- combine this many one-word chat messages into one code
     AutoSubmit    = true,
@@ -79,6 +78,7 @@ local State = {
     Submitting  = false,
     Parts       = {},   -- captured one-word message parts
     LastPartAt  = 0,
+    Enabled     = true, -- master switch (Scanning button)
 }
 
 -------------------------------------------------
@@ -356,8 +356,8 @@ end
 -- Main window
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 420, 0, 616)
-Main.Position = UDim2.new(0.5, -210, 0.5, -308)
+Main.Size = UDim2.new(0, 420, 0, 490)
+Main.Position = UDim2.new(0.5, -210, 0.5, -245)
 Main.BackgroundColor3 = THEME.Background
 Main.BorderSizePixel = 0
 Main.Active = true
@@ -421,8 +421,8 @@ Discord.Parent = Main
 round(Discord, 10)
 stroke(Discord, THEME.NeonDim, 1.5, 0.3)
 
--- Status bar ("Scanning...")
-local Status = Instance.new("TextLabel")
+-- Status button ("Scanning..." = on, "Scan" = off)
+local Status = Instance.new("TextButton")
 Status.Size = UDim2.new(1, -40, 0, 38)
 Status.Position = UDim2.new(0, 20, 0, 102)
 Status.BackgroundColor3 = THEME.Panel
@@ -430,6 +430,7 @@ Status.Font = Enum.Font.GothamBold
 Status.TextSize = 17
 Status.TextColor3 = THEME.Text
 Status.Text = "Scanning..."
+Status.AutoButtonColor = false
 Status.Parent = Main
 round(Status, 10)
 stroke(Status, THEME.Neon, 1.5, 0.25)
@@ -499,27 +500,13 @@ makeToggle(p1, "Auto submit", CONFIG.AutoSubmit, function(v) CONFIG.AutoSubmit =
 local p2 = makePanel(215, 152, 185, 46)
 makeToggle(p2, "Riddle solver", CONFIG.RiddleSolver, function(v) CONFIG.RiddleSolver = v end)
 
--- Row 2: Retype invalid | Submit after
+-- Row 2: History | Submit after msgs
 local p3 = makePanel(20, 206, 185, 46)
-makeToggle(p3, "Retype invalid", CONFIG.RetypeInvalid, function(v) CONFIG.RetypeInvalid = v end)
-
--- Row 3: Auto paste | History
-local p5 = makePanel(20, 260, 185, 46)
-makeToggle(p5, "Auto paste", CONFIG.AutoPaste, function(v) CONFIG.AutoPaste = v end)
-
-local p6 = makePanel(215, 260, 185, 46)
-local HistoryToggle = makeToggle(p6, "History", false, function(v)
+local HistoryToggle = makeToggle(p3, "History", false, function(v)
     if HistoryFrame then
         HistoryFrame.Visible = v
     end
 end)
-
--- Row 4: Track everyone | Snipe my msgs
-local p7 = makePanel(20, 314, 185, 46)
-makeToggle(p7, "Track everyone", CONFIG.TrackEveryone, function(v) CONFIG.TrackEveryone = v end)
-
-local p8 = makePanel(215, 314, 185, 46)
-makeToggle(p8, "Snipe my msgs", CONFIG.TrackSelf, function(v) CONFIG.TrackSelf = v end)
 
 local p4 = makePanel(215, 206, 185, 46)
 do
@@ -592,16 +579,15 @@ CodeBox.PlaceholderText = "enter / paste code here..."
 CodeBox.PlaceholderColor3 = THEME.TextDim
 CodeBox.Text = ""
 CodeBox.ClearTextOnFocus = false
-CodeBox.Parent = Main
+-- hidden: codes go straight into the game's own code box
 round(CodeBox, 10)
-stroke(CodeBox, THEME.Neon, 1.5, 0.3)
 
 -------------------------------------------------
 -- Log console
 -------------------------------------------------
 local Console = Instance.new("ScrollingFrame")
-Console.Size = UDim2.new(1, -40, 0, 180)
-Console.Position = UDim2.new(0, 20, 0, 416)
+Console.Size = UDim2.new(1, -40, 0, 210)
+Console.Position = UDim2.new(0, 20, 0, 260)
 Console.BackgroundColor3 = THEME.PanelDark
 Console.BorderSizePixel = 0
 Console.ScrollBarThickness = 5
@@ -642,6 +628,19 @@ local function log(msg, color)
 end
 
 log("scanning for codes...")
+
+Status.MouseButton1Click:Connect(function()
+    State.Enabled = not State.Enabled
+    if State.Enabled then
+        Status.Text = "Scanning..."
+        Status.TextColor3 = THEME.Text
+        log("sniper ON", THEME.Success)
+    else
+        Status.Text = "Scan"
+        Status.TextColor3 = THEME.TextDim
+        log("sniper OFF", THEME.Fail)
+    end
+end)
 
 -------------------------------------------------
 -- History popup
@@ -767,11 +766,13 @@ end)
 -- Submit logic (extra fast)
 -------------------------------------------------
 local function setStatus(text, color)
+    if not State.Enabled then return end
     Status.Text = text
     Status.TextColor3 = color or THEME.Text
 end
 
 local function submitCode(code, source)
+    if not State.Enabled then return end
     if State.Submitting then return end
     if not code or code == "" then
         log("nothing to submit", THEME.Fail)
@@ -869,7 +870,7 @@ task.spawn(function()
     pcall(function() lastClip = getclip() or "" end)
     while true do
         task.wait(0.15)
-        if CONFIG.AutoPaste then
+        if CONFIG.AutoPaste and State.Enabled then
             local clip
             pcall(function() clip = getclip() end)
             if clip and clip ~= "" and clip ~= lastClip then
@@ -940,6 +941,7 @@ end
 
 local chatHookConfirmed = false
 local function onChat(speakerName, message)
+    if not State.Enabled then return end
     if not chatHookConfirmed then
         chatHookConfirmed = true
         log("chat hook active (heard " .. speakerName .. ")", THEME.NeonSoft)
@@ -1165,6 +1167,7 @@ end
 
 local seenAnnounced = {}
 local function onAnnouncement(...)
+    if not State.Enabled then return end
     local text = stripRich(tostring((...) or ""))
     text = text:match("^%s*(.-)%s*$") or ""
     if text == "" then return end
