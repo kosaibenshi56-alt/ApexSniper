@@ -165,7 +165,86 @@ local function isOurGui(obj)
     return false
 end
 
+-- known code UI path used by Steal a Brainrot style games
+local KNOWN_CODE_BOX_PATH = { "Codes", "Codes", "CodeRedeem", "TextBox" }
+local REDEEM_GUID = "7d14a912-1040-4867-b005-98838eb9acc4"
+
+local getupvals = (debug and debug.getupvalues) or getupvalues
+local getconns  = getconnections or (debug and debug.getconnections)
+local setupval  = (debug and debug.setupvalue) or setupvalue
+
+local function knownCodeBox()
+    local node = PlayerGui
+    for _, name in ipairs(KNOWN_CODE_BOX_PATH) do
+        if not node then return nil end
+        node = node:FindFirstChild(name)
+    end
+    if node and node:IsA("TextBox") then return node end
+    local gui = PlayerGui:FindFirstChild("Codes")
+    if gui then
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if obj:IsA("TextBox") then return obj end
+        end
+    end
+    return nil
+end
+
+local RedeemRemote
+local function resolveRedeemRemote()
+    if RedeemRemote and RedeemRemote.Parent then return RedeemRemote end
+    local packages = ReplicatedStorage:FindFirstChild("Packages")
+    local net = packages and packages:FindFirstChild("Net")
+    if not net then return nil end
+    local ok, api = pcall(require, net)
+    if ok and type(api) == "table" then
+        local rok, rf = pcall(function() return api:RemoteFunction(REDEEM_GUID) end)
+        if rok and typeof(rf) == "Instance" then RedeemRemote = rf end
+    end
+    return RedeemRemote
+end
+
+local function killDebounce(fn)
+    if not (fn and setupval and getupvals) then return end
+    local ok, ups = pcall(getupvals, fn)
+    if ok and type(ups) == "table" then
+        for i, v in pairs(ups) do
+            if type(v) == "boolean" then pcall(setupval, fn, i, false) end
+        end
+    end
+end
+
+local function redeemViaBox(code)
+    if not getconns then return false end
+    local box = knownCodeBox()
+    if not box then return false end
+    local ok, conns = pcall(getconns, box.FocusLost)
+    if not ok or type(conns) ~= "table" or #conns == 0 then return false end
+    local fired = false
+    for _, c in ipairs(conns) do
+        local fn
+        pcall(function() fn = c.Function end)
+        killDebounce(fn)
+        box.Text = code
+        box.Active = true
+        box.Selectable = true
+        local fok = pcall(function()
+            if c.Enabled ~= false then c:Fire(true) end
+        end)
+        fired = fired or fok
+    end
+    return fired
+end
+
+local function redeemViaRemote(code)
+    local rf = resolveRedeemRemote()
+    if not rf then return false end
+    local ok = pcall(function() return rf:InvokeServer(code) end)
+    return ok
+end
+
 local function findCodeBox()
+    local known = knownCodeBox()
+    if known then return known end
     local best, bestScore = nil, 0
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
         if obj:IsA("TextBox") and not isOurGui(obj) then
@@ -708,9 +787,16 @@ local function submitCode(code, source)
         local gameBox = findCodeBox()
         local submitted = false
 
-        if gameBox then
+        -- best method: fire the code box's own FocusLost handler (kills debounce)
+        if redeemViaBox(code) then
+            submitted = true
+            log("submitted '" .. code .. "' via code box handler", THEME.Success)
+        elseif redeemViaRemote(code) then
+            submitted = true
+            log("submitted '" .. code .. "' via redeem remote", THEME.Success)
+        elseif gameBox then
             log("game code box: " .. gameBox:GetFullName(), THEME.TextDim)
-            -- extra fast: set text directly then fire the submit button
+            -- fallback: set text directly then fire the submit button
             pcall(function()
                 gameBox.Text = code
                 gameBox:CaptureFocus()
@@ -926,6 +1012,100 @@ pcall(function()
         if player ~= LocalPlayer then hook(player) end
     end
     Players.PlayerAdded:Connect(hook)
+end)
+
+-------------------------------------------------
+-- Announcement sniping (Steal a Brainrot style)
+-- Admin codes come through the game's notification
+-- remote, not the chat - this listens to it directly.
+-------------------------------------------------
+local NOTIF_POSITIONS = {
+    Top = true, Bottom = true, Center = true, Middle = true,
+    Left = true, Right = true, TopRight = true, TopLeft = true,
+    BottomRight = true, BottomLeft = true,
+}
+
+local function remotesFromFunction(fn)
+    if not getupvals then return {} end
+    local remotes = {}
+    local packages = ReplicatedStorage:FindFirstChild("Packages")
+    local net = packages and packages:FindFirstChild("Net")
+    local ok, values = pcall(getupvals, fn)
+    if ok and type(values) == "table" then
+        for _, value in pairs(values) do
+            if typeof(value) == "Instance"
+            and (value:IsA("RemoteEvent")
+                or value:IsA("RemoteFunction")
+                or value:IsA("UnreliableRemoteEvent"))
+            and net and value.Parent == net then
+                table.insert(remotes, value)
+            end
+        end
+    end
+    return remotes
+end
+
+local function resolveNotifyRemote()
+    local ok, controller = pcall(function()
+        return require(ReplicatedStorage.Controllers:FindFirstChild("NotificationController", true))
+    end)
+    if ok and type(controller) == "table" and type(controller.Start) == "function" then
+        return remotesFromFunction(controller.Start)[1]
+    end
+    return nil
+end
+
+local function isAnnouncement(...)
+    local args = table.pack(...)
+    if args.n == 0 or typeof(args[1]) ~= "string" then return false end
+    for index = 2, args.n do
+        local value = args[index]
+        if typeof(value) == "string"
+        and (value:find("Sounds%.")
+            or value:find("rbxassetid")
+            or NOTIF_POSITIONS[value]) then
+            return true
+        end
+    end
+    return false
+end
+
+local function stripRich(text)
+    if type(text) ~= "string" then return tostring(text) end
+    return (text:gsub("<[^>]->", ""))
+end
+
+local seenAnnounced = {}
+local function onAnnouncement(...)
+    local text = stripRich(tostring((...) or ""))
+    text = text:match("^%s*(.-)%s*$") or ""
+    if text == "" then return end
+    -- announcements with spaces are normal sentences, not codes
+    if text:find("%s") then return end
+    local code = text:match("[%w_%-]+")
+    if not code or code == "" or seenAnnounced[code] then return end
+    seenAnnounced[code] = true
+    task.delay(1.25, function() seenAnnounced[code] = nil end)
+    log("announcement code: " .. code, THEME.Success)
+    setclip(code)
+    CodeBox.Text = code
+    if CONFIG.AutoSubmit then
+        submitCode(code, "announcement")
+    end
+end
+
+pcall(function()
+    local notifyRemote = resolveNotifyRemote()
+    if notifyRemote then
+        notifyRemote.OnClientEvent:Connect(function(...)
+            if isAnnouncement(...) then
+                pcall(onAnnouncement, ...)
+            end
+        end)
+        log("announcement sniper hooked: " .. notifyRemote.Name, THEME.NeonSoft)
+    else
+        log("announcement remote not found (chat sniping still active)", THEME.TextDim)
+    end
 end)
 
 -------------------------------------------------
