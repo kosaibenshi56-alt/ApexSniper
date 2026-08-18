@@ -46,6 +46,7 @@ local CONFIG = {
     TrackEveryone = false,
     TrackSelf     = false,  -- also react to your own chat messages (for testing)
     SubmitDelay   = 0,      -- seconds to wait before auto submit (0 = instant)
+    SubmitAfter   = 1,      -- combine this many one-word chat messages into one code
     AutoSubmit    = true,
     AutoPaste     = true,   -- watch clipboard and auto paste + submit new codes
     RiddleSolver  = true,
@@ -76,6 +77,8 @@ local State = {
     History     = {},   -- { {code = "ABC", from = "sammy", time = "12:00"} , ... }
     LastCode    = nil,
     Submitting  = false,
+    Parts       = {},   -- captured one-word message parts
+    LastPartAt  = 0,
 }
 
 -------------------------------------------------
@@ -528,7 +531,7 @@ do
     label.TextSize = 14
     label.TextColor3 = THEME.Text
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Text = "Submit after"
+    label.Text = "Submit after msgs"
     label.Parent = p4
 
     local minus = Instance.new("TextButton")
@@ -549,7 +552,7 @@ do
     num.Font = Enum.Font.GothamBold
     num.TextSize = 16
     num.TextColor3 = THEME.NeonSoft
-    num.Text = tostring(CONFIG.SubmitDelay)
+    num.Text = tostring(CONFIG.SubmitAfter)
     num.Parent = p4
 
     local plus = Instance.new("TextButton")
@@ -564,12 +567,14 @@ do
     round(plus, 6)
 
     minus.MouseButton1Click:Connect(function()
-        CONFIG.SubmitDelay = math.max(0, CONFIG.SubmitDelay - 1)
-        num.Text = tostring(CONFIG.SubmitDelay)
+        CONFIG.SubmitAfter = math.max(1, CONFIG.SubmitAfter - 1)
+        num.Text = tostring(CONFIG.SubmitAfter)
+        State.Parts = {}
     end)
     plus.MouseButton1Click:Connect(function()
-        CONFIG.SubmitDelay = math.min(30, CONFIG.SubmitDelay + 1)
-        num.Text = tostring(CONFIG.SubmitDelay)
+        CONFIG.SubmitAfter = math.min(10, CONFIG.SubmitAfter + 1)
+        num.Text = tostring(CONFIG.SubmitAfter)
+        State.Parts = {}
     end)
 end
 
@@ -956,10 +961,34 @@ local function onChat(speakerName, message)
         end
     end
 
+    local allowed = isWatched(speakerName) or (speakerName == LocalPlayer.Name and CONFIG.TrackSelf)
+
+    -- multi-part codes: admins split a code over several one-word messages
+    -- ("code is" -> "vor" -> "nyx"). collect SubmitAfter parts, then submit.
+    local token = message:match("^%s*([%w_%-]+)%s*$")
+    if token and allowed and CONFIG.SubmitAfter > 1 then
+        local now = os.clock()
+        if now - State.LastPartAt > 20 then State.Parts = {} end
+        State.LastPartAt = now
+        table.insert(State.Parts, token)
+        local combined = table.concat(State.Parts)
+        CodeBox.Text = combined
+        log("part " .. #State.Parts .. "/" .. CONFIG.SubmitAfter .. " from " .. speakerName .. ": " .. token, THEME.NeonSoft)
+        if #State.Parts >= CONFIG.SubmitAfter then
+            State.Parts = {}
+            setclip(combined)
+            log("combined code: " .. combined, THEME.Success)
+            if CONFIG.AutoSubmit then
+                submitCode(combined, speakerName)
+            end
+        end
+        return
+    end
+
     -- code sniping from watched admins
     local code = extractCode(message)
     if code then
-        if isWatched(speakerName) or (speakerName == LocalPlayer.Name and CONFIG.TrackSelf) then
+        if allowed then
             if code ~= State.LastCode then
                 log("code from " .. speakerName .. ": " .. code, THEME.Success)
                 setclip(code)
