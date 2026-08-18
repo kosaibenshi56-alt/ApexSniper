@@ -1046,11 +1046,20 @@ local function remotesFromFunction(fn)
 end
 
 local function resolveNotifyRemote()
-    local ok, controller = pcall(function()
-        return require(ReplicatedStorage.Controllers:FindFirstChild("NotificationController", true))
-    end)
-    if ok and type(controller) == "table" and type(controller.Start) == "function" then
-        return remotesFromFunction(controller.Start)[1]
+    local module = nil
+    local controllers = ReplicatedStorage:FindFirstChild("Controllers")
+    if controllers then
+        module = controllers:FindFirstChild("NotificationController", true)
+    end
+    if not module then
+        module = ReplicatedStorage:FindFirstChild("NotificationController", true)
+    end
+    if module and module:IsA("ModuleScript") then
+        local ok, controller = pcall(require, module)
+        if ok and type(controller) == "table" and type(controller.Start) == "function" then
+            local remote = remotesFromFunction(controller.Start)[1]
+            if remote then return remote end
+        end
     end
     return nil
 end
@@ -1103,9 +1112,32 @@ pcall(function()
             end
         end)
         log("announcement sniper hooked: " .. notifyRemote.Name, THEME.NeonSoft)
-    else
-        log("announcement remote not found (chat sniping still active)", THEME.TextDim)
+        return
     end
+
+    -- fallback: listen to every RemoteEvent in the game and filter
+    -- for announcement-style payloads
+    local hookedCount = 0
+    local hookedRemotes = {}
+    local function hookRemote(obj)
+        if hookedRemotes[obj] then return end
+        if obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") then
+            hookedRemotes[obj] = true
+            hookedCount += 1
+            obj.OnClientEvent:Connect(function(...)
+                if isAnnouncement(...) then
+                    pcall(onAnnouncement, ...)
+                end
+            end)
+        end
+    end
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        pcall(hookRemote, obj)
+    end
+    ReplicatedStorage.DescendantAdded:Connect(function(obj)
+        pcall(hookRemote, obj)
+    end)
+    log("announcement sniper: listening on " .. hookedCount .. " remotes", THEME.NeonSoft)
 end)
 
 -------------------------------------------------
