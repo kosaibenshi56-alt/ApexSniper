@@ -939,6 +939,27 @@ local function solveRiddle(msg)
     return nil
 end
 
+-- shared part collector: every captured one-word token is appended here.
+-- when SubmitAfter parts are collected they get combined and submitted.
+local function handleToken(token, source)
+    if not State.Enabled then return end
+    local now = os.clock()
+    if now - State.LastPartAt > 20 then State.Parts = {} end
+    State.LastPartAt = now
+    table.insert(State.Parts, token)
+    local combined = table.concat(State.Parts)
+    CodeBox.Text = combined
+    log("part " .. #State.Parts .. "/" .. CONFIG.SubmitAfter .. " from " .. source .. ": " .. token, THEME.NeonSoft)
+    if #State.Parts >= CONFIG.SubmitAfter then
+        State.Parts = {}
+        setclip(combined)
+        log("combined code: " .. combined, THEME.Success)
+        if CONFIG.AutoSubmit then
+            submitCode(combined, source)
+        end
+    end
+end
+
 local chatHookConfirmed = false
 local function onChat(speakerName, message)
     if not State.Enabled then return end
@@ -969,21 +990,7 @@ local function onChat(speakerName, message)
     -- ("code is" -> "vor" -> "nyx"). collect SubmitAfter parts, then submit.
     local token = message:match("^%s*([%w_%-]+)%s*$")
     if token and allowed and CONFIG.SubmitAfter > 1 then
-        local now = os.clock()
-        if now - State.LastPartAt > 20 then State.Parts = {} end
-        State.LastPartAt = now
-        table.insert(State.Parts, token)
-        local combined = table.concat(State.Parts)
-        CodeBox.Text = combined
-        log("part " .. #State.Parts .. "/" .. CONFIG.SubmitAfter .. " from " .. speakerName .. ": " .. token, THEME.NeonSoft)
-        if #State.Parts >= CONFIG.SubmitAfter then
-            State.Parts = {}
-            setclip(combined)
-            log("combined code: " .. combined, THEME.Success)
-            if CONFIG.AutoSubmit then
-                submitCode(combined, speakerName)
-            end
-        end
+        handleToken(token, speakerName)
         return
     end
 
@@ -1067,19 +1074,49 @@ pcall(function()
         return nil
     end
 
-    local function handleLabel(obj)
+    -- big on-screen announcement words ("CODES" "ARE" "VORNYX"...)
+    -- each giant label is one part of the code; feed it into the combiner.
+    local seenAnnounceWords = {}
+    local function announceToken(text)
+        text = stripRichText(text)
+        local token = text:match("^[^%w]*([%w_%-]+)[^%w]*$")
+        if not token or #token < 2 then return end
+        if seenAnnounceWords[token] then return end
+        seenAnnounceWords[token] = true
+        task.delay(1.25, function() seenAnnounceWords[token] = nil end)
+        handleToken(token, "screen")
+    end
+
+    local function handleLabel(obj, isNew)
         if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
         if isOurGui(obj) then return end
+        local pending = 0
         local function process()
             local text = obj.Text
             if not text or text == "" then return end
             local name, msg = parseChatLabel(text)
-            if not name then return end
-            local key = name .. "\0" .. msg
-            if seenGuiMsgs[key] then return end
-            seenGuiMsgs[key] = true
-            task.delay(5, function() seenGuiMsgs[key] = nil end)
-            onChat(name, msg)
+            if name then
+                local key = name .. "\0" .. msg
+                if seenGuiMsgs[key] then return end
+                seenGuiMsgs[key] = true
+                task.delay(5, function() seenGuiMsgs[key] = nil end)
+                onChat(name, msg)
+                return
+            end
+            -- announcement words: only labels that appeared after startup,
+            -- rendered big on screen. debounce so typewriter animations
+            -- only produce the final word.
+            if isNew and obj:IsA("TextLabel") then
+                pending = pending + 1
+                local my = pending
+                task.delay(0.4, function()
+                    if my ~= pending then return end
+                    if not obj.Parent or not obj.Visible then return end
+                    local h = obj.AbsoluteSize.Y
+                    if h < 35 then return end
+                    pcall(announceToken, obj.Text)
+                end)
+            end
         end
         process()
         obj:GetPropertyChangedSignal("Text"):Connect(process)
@@ -1087,12 +1124,12 @@ pcall(function()
 
     PlayerGui.DescendantAdded:Connect(function(obj)
         task.wait(0.04)
-        pcall(handleLabel, obj)
+        pcall(handleLabel, obj, true)
     end)
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
-        pcall(handleLabel, obj)
+        pcall(handleLabel, obj, false)
     end
-    log("GUI chat watcher active", THEME.TextDim)
+    log("GUI chat + screen announcement watcher active", THEME.TextDim)
 end)
 
 -------------------------------------------------
@@ -1177,12 +1214,7 @@ local function onAnnouncement(...)
     if not code or code == "" or seenAnnounced[code] then return end
     seenAnnounced[code] = true
     task.delay(1.25, function() seenAnnounced[code] = nil end)
-    log("announcement code: " .. code, THEME.Success)
-    setclip(code)
-    CodeBox.Text = code
-    if CONFIG.AutoSubmit then
-        submitCode(code, "announcement")
-    end
+    handleToken(code, "announcement")
 end
 
 pcall(function()
