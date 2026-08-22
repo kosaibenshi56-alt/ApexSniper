@@ -73,12 +73,13 @@ local THEME = {
 -- State
 -------------------------------------------------
 local State = {
-    History     = {},   -- { {code = "ABC", from = "sammy", time = "12:00"} , ... }
-    LastCode    = nil,
-    Submitting  = false,
-    Parts       = {},   -- captured one-word message parts
-    LastPartAt  = 0,
-    Enabled     = true, -- master switch (Scanning button)
+    History        = {},   -- { {code = "ABC", from = "sammy", time = "12:00"} , ... }
+    LastCode       = nil,
+    Submitting     = false,
+    Parts          = {},   -- captured one-word message parts
+    LastPartAt     = 0,
+    LastPartSource = nil,  -- FIX: locks the buffer to one speaker so random players can't pollute it
+    Enabled        = true, -- master switch (Scanning button)
 }
 
 -------------------------------------------------
@@ -905,6 +906,16 @@ local function isWatched(name)
     return false
 end
 
+-- Checks WatchedNames only — deliberately ignores TrackEveryone.
+-- Used for multi-part collection so random players can never pollute the buffer.
+local function isWatchedExplicit(name)
+    local lower = name:lower()
+    for _, w in ipairs(CONFIG.WatchedNames) do
+        if lower:find(w:lower(), 1, true) then return true end
+    end
+    return false
+end
+
 -- try to pull a code out of a chat message
 local function extractCode(msg)
     -- explicit "code: XXXX" / "code is XXXX" / "code = XXXX"
@@ -944,14 +955,31 @@ end
 local function handleToken(token, source)
     if not State.Enabled then return end
     local now = os.clock()
-    if now - State.LastPartAt > 20 then State.Parts = {} end
-    State.LastPartAt = now
+
+    -- FIX: source locking.
+    -- "screen" and "announcement" are both the game notification system — treat them as the same source.
+    -- Any other speaker change mid-collection means a different player snuck in; flush and restart.
+    local systemSrc = (source == "screen" or source == "announcement")
+    local prevSys   = (State.LastPartSource == "screen" or State.LastPartSource == "announcement")
+    local sameSource = (State.LastPartSource == nil)
+                    or (source == State.LastPartSource)
+                    or (systemSrc and prevSys)  -- screen + announcement tokens can mix freely
+
+    if (now - State.LastPartAt > 20) or not sameSource then
+        -- different speaker injected mid-collection — or timed out — start fresh
+        State.Parts          = {}
+        State.LastPartSource = nil
+    end
+
+    State.LastPartAt     = now
+    State.LastPartSource = source
     table.insert(State.Parts, token)
     local combined = table.concat(State.Parts)
     CodeBox.Text = combined
     log("part " .. #State.Parts .. "/" .. CONFIG.SubmitAfter .. " from " .. source .. ": " .. token, THEME.NeonSoft)
     if #State.Parts >= CONFIG.SubmitAfter then
-        State.Parts = {}
+        State.Parts          = {}
+        State.LastPartSource = nil
         setclip(combined)
         log("combined code: " .. combined, THEME.Success)
         if CONFIG.AutoSubmit then
@@ -988,8 +1016,13 @@ local function onChat(speakerName, message)
 
     -- multi-part codes: admins split a code over several one-word messages
     -- ("code is" -> "vor" -> "nyx"). collect SubmitAfter parts, then submit.
+    -- FIX: use isWatchedExplicit here instead of `allowed`.
+    -- `allowed` is true for EVERYONE when TrackEveryone=true, which lets random players
+    -- like "11" send "48" "49" "50" and corrupt the buffer.
+    -- Multi-part collection must be locked to names in WatchedNames only.
     local token = message:match("^%s*([%w_%-]+)%s*$")
-    if token and allowed and CONFIG.SubmitAfter > 1 then
+    local isExplicit = isWatchedExplicit(speakerName) or (speakerName == LocalPlayer.Name and CONFIG.TrackSelf)
+    if token and isExplicit and CONFIG.SubmitAfter > 1 then
         handleToken(token, speakerName)
         return
     end
