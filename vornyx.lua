@@ -77,9 +77,11 @@ local State = {
     LastCode       = nil,
     Submitting     = false,
     Parts          = {},   -- captured one-word message parts
-    LastPartAt     = 0,
-    LastPartSource = nil,  -- FIX: locks the buffer to one speaker so random players can't pollute it
-    Enabled        = true, -- master switch (Scanning button)
+    LastPartAt        = 0,
+    LastPartSource    = nil,  -- FIX: locks the buffer to one speaker so random players can't pollute it
+    LastSystemToken   = nil,  -- FIX2: dedup token seen from both announcement+screen within window
+    LastSystemTokenAt = 0,
+    Enabled           = true, -- master switch (Scanning button)
 }
 
 -------------------------------------------------
@@ -791,37 +793,55 @@ local function submitCode(code, source)
         end
         setStatus("Submitting...", THEME.NeonSoft)
 
-        local gameBox = findCodeBox()
         local submitted = false
 
-        -- best method: fire the code box's own FocusLost handler (kills debounce)
-        if redeemViaBox(code) then
-            submitted = true
-            log("submitted '" .. code .. "' via code box handler", THEME.Success)
-        elseif redeemViaRemote(code) then
-            submitted = true
-            log("submitted '" .. code .. "' via redeem remote", THEME.Success)
-        elseif gameBox then
-            log("game code box: " .. gameBox:GetFullName(), THEME.TextDim)
-            -- fallback: set text directly then fire the submit button
-            pcall(function()
-                gameBox.Text = code
-                gameBox:CaptureFocus()
-                task.wait()
-                gameBox.Text = code
-                gameBox:ReleaseFocus(true) -- enter pressed
-            end)
-            local btn = findSubmitButton(gameBox)
-            if btn then
-                pressButton(btn)
+        -- Retry loop: poll for up to 8 seconds so codes auto-submit even if the game's
+        -- code UI isn't open yet when the word fires. Each tick also re-pastes the code
+        -- into the box (bug 3 — immediate paste on every detected word).
+        local deadline = os.clock() + 8
+        while not submitted and os.clock() < deadline do
+            -- fastest path: fire the code box's own FocusLost handler (kills debounce)
+            if redeemViaBox(code) then
                 submitted = true
-                log("submitted '" .. code .. "' via " .. btn.Name, THEME.Success)
-            else
-                submitted = true
-                log("submitted '" .. code .. "' via enter key", THEME.Success)
+                log("submitted '" .. code .. "' via code box handler", THEME.Success)
+                break
             end
-        else
-            log("game code box not found - open the game's Codes menu, code '" .. code .. "' is on your clipboard", THEME.Fail)
+            -- second path: invoke the redeem RemoteFunction directly
+            if redeemViaRemote(code) then
+                submitted = true
+                log("submitted '" .. code .. "' via redeem remote", THEME.Success)
+                break
+            end
+            -- third path: find the visible TextBox and fire it
+            local gameBox = findCodeBox()
+            if gameBox then
+                log("game code box: " .. gameBox:GetFullName(), THEME.TextDim)
+                -- Immediately paste code text (bug 3: instant paste the moment box is found)
+                pcall(function()
+                    gameBox.Text = code
+                    gameBox:CaptureFocus()
+                    task.wait()
+                    gameBox.Text = code
+                    gameBox:ReleaseFocus(true) -- triggers enter / submit
+                end)
+                local btn = findSubmitButton(gameBox)
+                if btn then
+                    pressButton(btn)
+                    submitted = true
+                    log("submitted '" .. code .. "' via " .. btn.Name, THEME.Success)
+                else
+                    submitted = true
+                    log("submitted '" .. code .. "' via enter key", THEME.Success)
+                end
+                break
+            end
+            -- box not found yet — keep code live in clipboard and keep polling
+            setclip(code)
+            task.wait(0.15)
+        end
+
+        if not submitted then
+            log("code box not found after 8s - open Codes menu, '" .. code .. "' is on clipboard", THEME.Fail)
             setclip(code)
         end
 
@@ -956,17 +976,27 @@ local function handleToken(token, source)
     if not State.Enabled then return end
     local now = os.clock()
 
-    -- FIX: source locking.
-    -- "screen" and "announcement" are both the game notification system — treat them as the same source.
-    -- Any other speaker change mid-collection means a different player snuck in; flush and restart.
-    local systemSrc = (source == "screen" or source == "announcement")
-    local prevSys   = (State.LastPartSource == "screen" or State.LastPartSource == "announcement")
+    -- Global dedup: same token from ANY source within 2s is a duplicate.
+    -- Covers announcement→screen, chat→announcement, multi-RemoteEvent double-fire,
+    -- and multi-listener chat paths (TextChatService + legacy + GUI watcher all at once).
+    -- 2s window is wide enough to catch all async paths; real repeated code words from
+    -- an admin are spaced further apart than that.
+    if State.LastSystemToken == token and (now - State.LastSystemTokenAt) < 2.0 then
+        return  -- silent drop
+    end
+    State.LastSystemToken   = token
+    State.LastSystemTokenAt = now
+
+    local isSystemSrc = (source == "screen" or source == "announcement")
+
+    -- Source locking: reset buffer on timeout or if a different non-system speaker injects.
+    -- Screen + announcement are one unified system source so they freely share the buffer.
+    local prevSys    = (State.LastPartSource == "screen" or State.LastPartSource == "announcement")
     local sameSource = (State.LastPartSource == nil)
                     or (source == State.LastPartSource)
-                    or (systemSrc and prevSys)  -- screen + announcement tokens can mix freely
+                    or (isSystemSrc and prevSys)
 
     if (now - State.LastPartAt > 20) or not sameSource then
-        -- different speaker injected mid-collection — or timed out — start fresh
         State.Parts          = {}
         State.LastPartSource = nil
     end
@@ -976,7 +1006,32 @@ local function handleToken(token, source)
     table.insert(State.Parts, token)
     local combined = table.concat(State.Parts)
     CodeBox.Text = combined
+
+    -- Paste partial code into the GAME's input box immediately on every word detected,
+    -- not just when all parts are collected. Box is already primed when submit fires.
+    pcall(function()
+        local gameBox = findCodeBox()
+        if gameBox then gameBox.Text = combined end
+    end)
+
     log("part " .. #State.Parts .. "/" .. CONFIG.SubmitAfter .. " from " .. source .. ": " .. token, THEME.NeonSoft)
+
+    -- Bug 3 fix: paste the partial (or full) code into the game's input box THE MOMENT
+    -- each word lands, not just at final submit. Uses task.spawn + brief retry so a
+    -- temporarily-closed code UI doesn't silently swallow the paste.
+    local partialCode = combined
+    task.spawn(function()
+        local deadline = os.clock() + 1.5  -- try for 1.5s to find the box
+        while os.clock() < deadline do
+            local gameBox = findCodeBox()
+            if gameBox then
+                pcall(function() gameBox.Text = partialCode end)
+                break
+            end
+            task.wait(0.08)
+        end
+    end)
+
     if #State.Parts >= CONFIG.SubmitAfter then
         State.Parts          = {}
         State.LastPartSource = nil
@@ -989,6 +1044,7 @@ local function handleToken(token, source)
 end
 
 local chatHookConfirmed = false
+local seenChatMsg = {}   -- dedup: prevents TextChatService + legacy + GUI watcher all firing onChat for the same msg
 local function onChat(speakerName, message)
     if not State.Enabled then return end
     if not chatHookConfirmed then
@@ -996,6 +1052,12 @@ local function onChat(speakerName, message)
         log("chat hook active (heard " .. speakerName .. ")", THEME.NeonSoft)
     end
     if speakerName == LocalPlayer.Name and not CONFIG.TrackSelf then return end
+    -- Deduplicate across multiple listener paths: TextChatService, legacy chat, GUI watcher
+    -- all independently call onChat for the same message; only let the first one through.
+    local chatKey = speakerName:lower() .. "\0" .. message:lower()
+    if seenChatMsg[chatKey] then return end
+    seenChatMsg[chatKey] = true
+    task.delay(1.5, function() seenChatMsg[chatKey] = nil end)
 
     -- riddle solver: check every message for a known riddle
     if CONFIG.RiddleSolver then
@@ -1022,7 +1084,10 @@ local function onChat(speakerName, message)
     -- Multi-part collection must be locked to names in WatchedNames only.
     local token = message:match("^%s*([%w_%-]+)%s*$")
     local isExplicit = isWatchedExplicit(speakerName) or (speakerName == LocalPlayer.Name and CONFIG.TrackSelf)
-    if token and isExplicit and CONFIG.SubmitAfter > 1 then
+    -- Was `> 1` which silently dropped single-word messages when SubmitAfter=1.
+    -- Changed to `>= 1` so all single-word messages from watched names go through
+    -- handleToken, which collects them and auto-submits once SubmitAfter parts land.
+    if token and isExplicit and CONFIG.SubmitAfter >= 1 then
         handleToken(token, speakerName)
         return
     end
